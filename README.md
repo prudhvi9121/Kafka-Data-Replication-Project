@@ -6,8 +6,7 @@
 
 **Repository Links:**
 - **Kafka Fork:** [https://github.com/prudhvi9121/kafka/](https://github.com/prudhvi9121/kafka/)
-- **Branch:** [`mm2-fault-tolerance`](https://github.com/prudhvi9121/kafka/tree/mm2-fault-tolerance)
-- **Pull Request:** [MirrorMaker 2 — Fault-Tolerant Replication (Log Truncation + Topic Reset)](https://github.com/prudhvi9121/kafka/compare/mm2-fault-tolerance)
+- **Pull Request:** [MirrorMaker 2 — Fault-Tolerant Replication (Log Truncation + Topic Reset)](https://github.com/prudhvi9121/kafka/pull/2)
 
 A production-hardened MirrorMaker 2 (MM2) that adds **log truncation detection** (fail-fast) and **topic reset recovery** (graceful resubscription) on top of Apache Kafka 4.0.0.
 
