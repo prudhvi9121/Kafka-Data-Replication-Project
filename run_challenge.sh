@@ -151,7 +151,7 @@ done
 if [ "$CRASHED" = "true" ]; then
     echo -e "${GREEN}✔ SUCCESS: Scenario 2 Passed! Enhanced MirrorMaker detected the truncation gap and failed-fast.${NC}"
     echo "  Key log line:"
-    docker logs mirror-maker 2>&1 | grep -m1 "CRITICAL REPLICATION GAP\|CRITICAL DATA LOSS\|DataLossException" || true
+    docker compose logs mirror-maker 2>&1 | grep -m1 "CRITICAL REPLICATION GAP\|CRITICAL DATA LOSS\|DataLossException" || true
 else
     echo -e "${RED}✘ FAILURE: Scenario 2 Failed. MirrorMaker is still running (expected crash).${NC}"
     echo "  Recent logs:"
@@ -199,11 +199,13 @@ echo "Waiting 20s for MM2 to detect the reset and recover..."
 sleep 20
 
 echo "Checking MM2 logs for automatic recovery indicators..."
-# grep -q in an if-statement is safe under set -e (the if itself handles non-zero exit)
-if docker logs mirror-maker 2>&1 | grep -q "TOPIC RESET DETECTED"; then
+# Use 'docker compose logs' (not raw 'docker logs') so the log stream is read through
+# Compose's aggregator — the same path used for the failure dump below. Raw 'docker logs'
+# multiplexes stdout/stderr in a binary framing that grep can mishandle on Windows/Git-Bash.
+if docker compose logs mirror-maker 2>&1 | grep -q "TOPIC RESET DETECTED"; then
     echo -e "${GREEN}✔ SUCCESS: Scenario 3 Passed! Topic reset detected and handled gracefully.${NC}"
     echo "  Recovery log:"
-    docker logs mirror-maker 2>&1 | grep "TOPIC RESET DETECTED" | head -3
+    docker compose logs mirror-maker 2>&1 | grep "TOPIC RESET DETECTED" | head -3
 else
     echo -e "${RED}✘ FAILURE: Scenario 3 Failed. 'TOPIC RESET DETECTED' not found in MM2 logs.${NC}"
     echo "  Recent MM2 logs:"
