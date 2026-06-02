@@ -1,0 +1,89 @@
+version: '3.8'
+
+services:
+  # ==========================================
+  # PRIMARY KAFKA CLUSTER
+  # ==========================================
+  primary-kafka:
+    image: apache/kafka:4.0.0
+    container_name: primary-kafka
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: 'broker,controller'
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: 'CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT'
+      KAFKA_CONTROLLER_LISTENER_NAMES: 'CONTROLLER'
+      KAFKA_LISTENERS: 'PLAINTEXT://0.0.0.0:29092,CONTROLLER://0.0.0.0:9093,EXTERNAL://0.0.0.0:9092'
+      KAFKA_ADVERTISED_LISTENERS: 'PLAINTEXT://primary-kafka:29092,EXTERNAL://localhost:9092'
+      KAFKA_CONTROLLER_QUORUM_VOTERS: '1@primary-kafka:9093'
+      KAFKA_LOG_DIRS: '/tmp/kraft-combined-logs'
+      CLUSTER_ID: 'MkU3OEVBNTcwNTJDNDM2Qk'
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 1
+      # Fast retention check so log-truncation scenario fires quickly
+      KAFKA_LOG_RETENTION_CHECK_INTERVAL_MS: 2000
+
+  # ==========================================
+  # STANDBY KAFKA CLUSTER (DR)
+  # ==========================================
+  standby-kafka:
+    image: apache/kafka:4.0.0
+    container_name: standby-kafka
+    ports:
+      - "9192:9192"
+    environment:
+      KAFKA_NODE_ID: 2
+      KAFKA_PROCESS_ROLES: 'broker,controller'
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: 'CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT'
+      KAFKA_CONTROLLER_LISTENER_NAMES: 'CONTROLLER'
+      KAFKA_LISTENERS: 'PLAINTEXT://0.0.0.0:29192,CONTROLLER://0.0.0.0:9193,EXTERNAL://0.0.0.0:9192'
+      KAFKA_ADVERTISED_LISTENERS: 'PLAINTEXT://standby-kafka:29192,EXTERNAL://localhost:9192'
+      KAFKA_CONTROLLER_QUORUM_VOTERS: '2@standby-kafka:9193'
+      KAFKA_LOG_DIRS: '/tmp/kraft-combined-logs'
+      CLUSTER_ID: 'ODI4OEVBNTcwNTJDNDM2Qk'
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 1
+
+  # ==========================================================================
+  # ENHANCED MIRRORMAKER 2 — Custom-built image with fault-tolerance patches
+  # Build context is the repo root (../kafka) so the Dockerfile can COPY
+  # connect/mirror/build/libs/connect-mirror-4.0.0.jar into the image.
+  # ==========================================================================
+  mirror-maker:
+    build:
+      context: ..
+      dockerfile: kafka-test/Dockerfile.mirrormaker
+    image: enhanced-mirrormaker:4.0.0
+    container_name: mirror-maker
+    restart: "no"
+    depends_on:
+      - primary-kafka
+      - standby-kafka
+    volumes:
+      - ./mm2.properties:/tmp/mm2.properties
+    command: /opt/kafka/bin/connect-mirror-maker.sh /tmp/mm2.properties
+
+  # ==========================================================================
+  # COMMIT LOG PRODUCER — CLI application for generating test events
+  # Runs on demand; override CMD in run_challenge.sh via docker-compose run.
+  # ==========================================================================
+  commit-log-producer:
+    build:
+      context: ./commit-log-producer
+      dockerfile: Dockerfile
+    image: commit-log-producer:1.0
+    container_name: commit-log-producer
+    depends_on:
+      - primary-kafka
+    environment:
+      # Points to the primary cluster's internal listener
+      KAFKA_BOOTSTRAP_SERVERS: primary-kafka:29092
+    # Default: no-op (override with --count N in run_challenge.sh)
+    command: [ "--count", "0" ]
+    profiles:
+      - producer
