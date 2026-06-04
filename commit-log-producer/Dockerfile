@@ -21,6 +21,5 @@ WORKDIR /app
 
 COPY --from=builder /build/target/commit-log-producer-1.0.jar app.jar
 
-# Default: produce 100 messages; override with --count N via CMD in docker-compose
 ENTRYPOINT ["java", "-jar", "app.jar"]
-CMD ["--count", "100"]
+# --count N is always passed by run_challenge.sh via docker compose run

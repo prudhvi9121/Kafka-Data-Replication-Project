@@ -1,15 +1,4 @@
-# ============================================================
-# Enhanced MirrorMaker 2 — Custom Docker Image
-# Extends the official Apache Kafka 4.0.0 image with our
-# modified connect-mirror JAR (log truncation detection +
-# topic reset recovery).
-# ============================================================
+# Enhanced MirrorMaker 2 — replaces the stock connect-mirror JAR with our modified build.
 FROM apache/kafka:4.0.0
 
-# Copy the locally compiled enhanced JAR, replacing the stock one.
-# The Kafka image stores connect JARs under /opt/kafka/libs/.
 COPY kafka/connect/mirror/build/libs/connect-mirror-4.0.0.jar /opt/kafka/libs/connect-mirror-4.0.0.jar
-
-# Verify the file was copied (helps with debugging build issues)
-RUN echo "Enhanced MirrorMaker JAR installed:" && \
-    ls -la /opt/kafka/libs/connect-mirror-4.0.0.jar
