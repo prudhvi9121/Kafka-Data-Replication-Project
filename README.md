@@ -1,4 +1,4 @@
-# Kafka MirrorMaker 2 — Enhanced Fault-Tolerant Replication
+# Kafka MirrorMaker 2 Enhanced Fault-Tolerant Replication
 
 **Docker Hub Images:**
 - [`prudhvikarri/enhanced-mirrormaker:4.0.0`](https://hub.docker.com/r/prudhvikarri/enhanced-mirrormaker)
@@ -37,7 +37,7 @@ ALL CORE CHALLENGE EVALUATION TASKS PASSED !
 
 ```
 Primary Cluster (port 9092)          Standby / DR Cluster (port 9192)
-┌─────────────────────────┐          ┌─────────────────────────┐
+┌─────────────────────────┐           ┌─────────────────────────┐
 │  Topic: commit-log       │          │  Topic: primary.commit-  │
 │  (Write-Ahead Log)       │          │  log (replicated copy)   │
 │                          │          │                          │
