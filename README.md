@@ -196,6 +196,8 @@ The original code logged every single record at `INFO` level. At 1,000 records/s
 ### Scenario 1 — Normal High-Velocity Replication
 Produces 1,000 JSON events to `commit-log` on the primary cluster and polls `primary.commit-log` on the DR cluster until all 1,000 records are confirmed replicated (60-second timeout).
 
+![Scenario 1 — Normal Replication](screenshots/Screenshot%202026-05-29%20114108.png)
+
 ### Scenario 2 — Log Truncation Fail-Fast
 1. MM2 stopped cleanly (offsets committed: 999)
 2. `retention.ms=1000` applied; 10 new messages produced (offsets 1000–1009)
@@ -204,12 +206,16 @@ Produces 1,000 JSON events to `commit-log` on the primary cluster and polls `pri
 5. MM2 restarted; `initializeConsumer` detects `earliestAvailable=1010 > lastCommitted+1=1000`
 6. MM2 calls `Exit.exit(1)` → container exits → test verifies `State.Running=false`
 
+![Scenario 2 — Log Truncation Fail-Fast](screenshots/Screenshot%202026-05-29%20114145.png)
+
 ### Scenario 3 — Graceful Topic Reset Recovery
 1. `commit-log` deleted and recreated (beginning offset resets to 0) **before** MM2 starts
 2. MM2 starts; startup check: `beginning=0 > lastCommitted+1=1000`? → NO → no crash
 3. MM2 seeks to offset 1000 → `OffsetOutOfRangeException`
 4. `handleExceptionBounds`: `beginning=0, expected=1000` → `[TOPIC RESET DETECTED]` logged
 5. `seekToBeginning()` called → MM2 resumes from offset 0 and replicates normally
+
+![Scenario 3 — Topic Reset Recovery](screenshots/Screenshot%202026-05-29%20114219.png)
 
 ---
 
