@@ -98,8 +98,8 @@ private boolean verifyOffsetSequence(TopicPartition tp, long actualOffset) {
     if (actualOffset > expectedOffset) {
         if (compactedTopics.contains(tp.topic())) { /* skip */ }
         log.error("[CRITICAL REPLICATION GAP] ...");
-        System.exit(1);          // Connect swallows exceptions; must exit the JVM directly
-        throw new DataLossException("...");  // unreachable; satisfies compiler
+        Exit.exit(1);            // Kafka checkstyle bans System.exit; Exit allows test mocking
+        throw new DataLossException("...");  // unreachable in prod; caught in tests via mocked Exit
     }
 
     // TASK 3: Backward offset → topic was deleted and recreated
@@ -114,8 +114,8 @@ private boolean verifyOffsetSequence(TopicPartition tp, long actualOffset) {
 }
 ```
 
-**Design decision — why `System.exit(1)` instead of `throw`?**  
-Kafka Connect's `WorkerSourceTask` catches all `RuntimeException` (and `ConnectException`) thrown from `poll()` or `start()`, marks the task as FAILED, and continues running the JVM. Throwing alone does not stop the container. `System.exit(1)` is the only reliable way to make the container exit and signal failure to the orchestrator.
+**Design decision — why `Exit.exit(1)` instead of `throw`?**  
+Kafka Connect's `WorkerSourceTask` catches all `RuntimeException` thrown from `poll()`, marks the task as FAILED, and continues running the JVM. Throwing alone does not stop the container. `Exit.exit(1)` (from `org.apache.kafka.common.utils.internals.Exit`) halts the JVM and signals failure to the orchestrator. We use `Exit` rather than `System.exit` directly because Kafka's checkstyle enforces the `dontUseSystemExit` rule — all process termination must go through `Exit` so test suites can mock it without killing the JVM.
 
 **Design decision — why accept the reset-triggering record?**  
 The original code returned `true` from the reset branch, causing `poll()` to discard the entire batch including the record at offset 0. That record is valid post-reset data. The fix sets `expectedOffsets[tp] = actualOffset + 1` and returns `false`, allowing the record to be forwarded to the DR cluster.
@@ -134,7 +134,7 @@ private void handleExceptionBounds(OffsetOutOfRangeException e) {
         // Data was purged before MM2 could replicate it → unrecoverable
         if (expected < beginning) {
             log.error("[CRITICAL DATA LOSS AT STARTUP] ...");
-            System.exit(1);
+            Exit.exit(1);
         }
 
         // Topic was recreated (beginning rolled back to 0)
@@ -162,7 +162,7 @@ void initializeConsumer(Set<TopicPartition> taskTopicPartitions) {
 
         if (earliestAvailable > (lastCommitted + 1)) {
             log.error("[CRITICAL DATA LOSS AT STARTUP] ...");
-            System.exit(1);
+            Exit.exit(1);
         }
     }
     // ... seek each partition to nextOffset
@@ -183,7 +183,7 @@ The original code logged every single record at `INFO` level. At 1,000 records/s
 | File | Purpose |
 |---|---|
 | `docker-compose.yml` | Two KRaft Kafka clusters + MM2 (custom image) + producer service |
-| `Dockerfile.mirrormaker` | Extends `apache/kafka:4.0.0`, replaces stock JAR with enhanced one |
+| `Dockerfile.mirrormaker` | Based on `eclipse-temurin:17-jre-jammy`; extracts the full Kafka release tarball built from our modified source. Swapping only the connect-mirror JAR into `apache/kafka:4.0.0` fails with `NoSuchMethodError` because SNAPSHOT JARs call APIs not present in `kafka-clients-4.0.0`. The tarball guarantees all JARs are version-consistent. |
 | `commit-log-producer/Dockerfile` | Multi-stage Maven build → minimal JRE runtime image |
 | `commit-log-producer/pom.xml` | Added `maven-shade-plugin` to produce an executable fat-jar |
 | `mm2.properties` | Switched to `DefaultReplicationPolicy`; disabled `sync.topic.configs` to prevent retention settings propagating to DR |
@@ -195,7 +195,6 @@ The original code logged every single record at `INFO` level. At 1,000 records/s
 
 ### Scenario 1 — Normal High-Velocity Replication
 Produces 1,000 JSON events to `commit-log` on the primary cluster and polls `primary.commit-log` on the DR cluster until all 1,000 records are confirmed replicated (60-second timeout).
-![alt text](<Screenshot 2026-05-29 114108.png>)
 
 ### Scenario 2 — Log Truncation Fail-Fast
 1. MM2 stopped cleanly (offsets committed: 999)
@@ -203,8 +202,7 @@ Produces 1,000 JSON events to `commit-log` on the primary cluster and polls `pri
 3. Wait 70 seconds for log retention to purge those messages
 4. 1 fresh message produced (offset 1010) to create a visible gap
 5. MM2 restarted; `initializeConsumer` detects `earliestAvailable=1010 > lastCommitted+1=1000`
-6. MM2 calls `System.exit(1)` → container exits → test verifies `State.Running=false`
-![alt text](<Screenshot 2026-05-29 114145.png>)
+6. MM2 calls `Exit.exit(1)` → container exits → test verifies `State.Running=false`
 
 ### Scenario 3 — Graceful Topic Reset Recovery
 1. `commit-log` deleted and recreated (beginning offset resets to 0) **before** MM2 starts
@@ -212,11 +210,9 @@ Produces 1,000 JSON events to `commit-log` on the primary cluster and polls `pri
 3. MM2 seeks to offset 1000 → `OffsetOutOfRangeException`
 4. `handleExceptionBounds`: `beginning=0, expected=1000` → `[TOPIC RESET DETECTED]` logged
 5. `seekToBeginning()` called → MM2 resumes from offset 0 and replicates normally
-![alt text](<Screenshot 2026-05-29 114219.png>)
 
 ---
 
 ### AI Usage
 
 AI assistance was used mainly for research, debugging support, and understanding Kafka MirrorMaker 2 internals during development. It helped analyze runtime issues, validate edge-case handling, and speed up investigation of Kafka Connect behavior.
-
