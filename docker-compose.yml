@@ -55,10 +55,11 @@ services:
   # connect/mirror/build/libs/connect-mirror-4.0.0.jar into the image.
   # ==========================================================================
   mirror-maker:
-    build:
-      context: ..
-      dockerfile: kafka-test/Dockerfile.mirrormaker
-    image: enhanced-mirrormaker:4.0.0
+    # To build locally from source, uncomment the build section below:
+    # build:
+    #   context: ..
+    #   dockerfile: kafka-test/Dockerfile.mirrormaker
+    image: prudhvikarri/enhanced-mirrormaker:4.0.0
     container_name: mirror-maker
     restart: "no"
     depends_on:
@@ -73,10 +74,11 @@ services:
   # Runs on demand; override CMD in run_challenge.sh via docker-compose run.
   # ==========================================================================
   commit-log-producer:
-    build:
-      context: ./commit-log-producer
-      dockerfile: Dockerfile
-    image: commit-log-producer:1.0
+    # To build locally from source, uncomment the build section below:
+    # build:
+    #   context: ./commit-log-producer
+    #   dockerfile: Dockerfile
+    image: prudhvikarri/commit-log-producer:1.0
     container_name: commit-log-producer
     depends_on:
       - primary-kafka

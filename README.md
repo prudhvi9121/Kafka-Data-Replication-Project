@@ -6,7 +6,7 @@
 
 **Repository Links:**
 - **Kafka Fork:** [https://github.com/prudhvi9121/kafka/](https://github.com/prudhvi9121/kafka/)
-- **Pull Request:** [MirrorMaker 2 — Fault-Tolerant Replication (Log Truncation + Topic Reset)](https://github.com/prudhvi9121/kafka/pull/2)
+- **Pull Request:** [MirrorMaker 2 — Fault-Tolerant Replication (Log Truncation + Topic Reset)](https://github.com/prudhvi9121/kafka/pull/1/changes)
 
 A production-hardened MirrorMaker 2 (MM2) that adds **log truncation detection** (fail-fast) and **topic reset recovery** (graceful resubscription) on top of Apache Kafka 4.0.0.
 
@@ -60,121 +60,61 @@ Primary Cluster (port 9092)          Standby / DR Cluster (port 9192)
 
 ## Source Code Changes
 
-Only **one** Kafka source file was modified:
+All changes were made in two files in the Kafka repository:
+- [`MirrorSourceTask.java`](../kafka/connect/mirror/src/main/java/org/apache/kafka/connect/mirror/MirrorSourceTask.java) (Main implementation)
+- [`MirrorSourceTaskTest.java`](../kafka/connect/mirror/src/test/java/org/apache/kafka/connect/mirror/MirrorSourceTaskTest.java) (Unit tests)
 
-### [`connect/mirror/src/main/java/org/apache/kafka/connect/mirror/MirrorSourceTask.java`](../kafka/connect/mirror/src/main/java/org/apache/kafka/connect/mirror/MirrorSourceTask.java)
+Here is a simple explanation of the changes:
 
-Total lines changed: **~120 lines** across additions and modifications.
+1. **Log Truncation Detection (Preventing Silent Data Loss):**
+   - **On Startup:** MirrorMaker checks the beginning offset of the source partition. If the beginning offset is greater than the last offset replicated (plus one), it means some messages were deleted by Kafka's log retention before replication could complete.
+   - **Mid-Stream:** While running, MirrorMaker continuously checks if the offset of incoming records matches the expected next offset. If the incoming offset is greater, a gap is detected.
+   - **Action:** In both cases, MirrorMaker prints a critical data loss warning and immediately terminates the task (fails-fast) to prevent replica mismatch. Compacted topics are exempt from this check.
+   ```java
+   // From MirrorSourceTask.java: Startup data-loss check
+   if (earliestAvailable > (lastCommitted + 1)) {
+       log.error("[CRITICAL DATA LOSS AT STARTUP] Partition {} has purged records...", tp);
+       exitOrThrow("Data loss at startup on partition " + tp, null);
+   }
+   ```
 
-#### Change 1 — Data Loss Exception Sentinel
+2. **Graceful Topic Reset Recovery:**
+   - **On Startup:** MirrorMaker checks if the topic was deleted and recreated (indicated by the earliest offset resetting to `0` while the last committed offset is positive and exceeds the broker's current end offset).
+   - **Mid-Stream:** MirrorMaker detects if the offset of polled records rolls back to a value lower than expected (meaning the topic was recreated mid-stream).
+   - **Action:** Instead of crashing or stalling, MirrorMaker logs a warning and automatically seeks to the beginning offset (`0`) to seamlessly continue replication.
+   ```java
+   // From MirrorSourceTask.java: Mid-stream reset recovery
+   if (actualOffset < expectedOffset) {
+       log.warn("[TOPIC RESET DETECTED] Source topic-partition {} reset...", tp);
+       consumer.seekToBeginning(Collections.singletonList(tp));
+       expectedOffsets.put(tp, actualOffset + 1L);
+   }
+   ```
 
-```java
-// New inner class added to MirrorSourceTask
-public static class DataLossException extends ConnectException {
-    public DataLossException(String message) { super(message); }
-}
-```
+3. **Explicit Offset Reset Control:**
+   - We override the Kafka consumer configuration and set `auto.offset.reset = none`. 
+   - This ensures that Kafka does not silently reset offsets when they go out of bounds, allowing MirrorMaker to catch the exception and run our custom data loss or reset detection logic.
+   ```java
+   // From MirrorSourceTask.java: Disable automatic consumer reset
+   consumerProps.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "none");
+   ```
 
-A typed exception that distinguishes deliberate fail-fast terminations from ordinary Connect errors.
+4. **Cleaner Log Output:**
+   - Changed the per-record logging level from `INFO` to `DEBUG` to prevent flooding the logs when replicating at high speeds (1,000+ messages/sec).
+   ```java
+   // From MirrorSourceTask.java: Log check sequence at DEBUG level
+   log.debug("Checking offset sequence: partition={}, actualOffset={}, expectedOffset={}",
+           tp, actualOffset, expectedOffset);
+   ```
 
-#### Change 2 — Compacted Topic Allowlist (Task 2 prerequisite)
-
-```java
-private final Set<String> compactedTopics = new java.util.HashSet<>();
-```
-
-Compacted topics legitimately skip offsets (log compaction removes duplicate keys). The set is consulted before raising a data loss alarm so compacted topics are exempt from the offset-gap check.
-
-#### Change 3 — `verifyOffsetSequence()` (Tasks 2 & 3)
-
-Called on every record consumed from the source topic to verify the offset is exactly the one expected.
-
-```java
-private boolean verifyOffsetSequence(TopicPartition tp, long actualOffset) {
-    Long expectedOffset = expectedOffsets.get(tp);
-    if (expectedOffset == null) return false;
-
-    // TASK 2: Gap detected → data was purged between last replicated and current offset
-    if (actualOffset > expectedOffset) {
-        if (compactedTopics.contains(tp.topic())) { /* skip */ }
-        log.error("[CRITICAL REPLICATION GAP] ...");
-        Exit.exit(1);            // Kafka checkstyle bans System.exit; Exit allows test mocking
-        throw new DataLossException("...");  // unreachable in prod; caught in tests via mocked Exit
-    }
-
-    // TASK 3: Backward offset → topic was deleted and recreated
-    if (actualOffset < expectedOffset) {
-        log.warn("[TOPIC RESET DETECTED] ... at {}", Instant.now(), ...);
-        consumer.seekToBeginning(Collections.singletonList(tp));
-        expectedOffsets.put(tp, actualOffset + 1L); // accept this record as valid post-reset data
-        return false;
-    }
-
-    return false;
-}
-```
-
-**Design decision — why `Exit.exit(1)` instead of `throw`?**  
-Kafka Connect's `WorkerSourceTask` catches all `RuntimeException` thrown from `poll()`, marks the task as FAILED, and continues running the JVM. Throwing alone does not stop the container. `Exit.exit(1)` (from `org.apache.kafka.common.utils.internals.Exit`) halts the JVM and signals failure to the orchestrator. We use `Exit` rather than `System.exit` directly because Kafka's checkstyle enforces the `dontUseSystemExit` rule — all process termination must go through `Exit` so test suites can mock it without killing the JVM.
-
-**Design decision — why accept the reset-triggering record?**  
-The original code returned `true` from the reset branch, causing `poll()` to discard the entire batch including the record at offset 0. That record is valid post-reset data. The fix sets `expectedOffsets[tp] = actualOffset + 1` and returns `false`, allowing the record to be forwarded to the DR cluster.
-
-#### Change 4 — `handleExceptionBounds()` (Task 3, startup path)
-
-Handles `OffsetOutOfRangeException` thrown by the consumer when MM2 tries to seek to an offset that no longer exists (topic was recreated while MM2 was down).
-
-```java
-private void handleExceptionBounds(OffsetOutOfRangeException e) {
-    Map<TopicPartition, Long> beginningOffsets = consumer.beginningOffsets(...);
-    for (TopicPartition tp : ...) {
-        long expected  = expectedOffsets.get(tp);   // where MM2 expects to resume
-        long beginning = beginningOffsets.get(tp);  // earliest available offset
-
-        // Data was purged before MM2 could replicate it → unrecoverable
-        if (expected < beginning) {
-            log.error("[CRITICAL DATA LOSS AT STARTUP] ...");
-            Exit.exit(1);
-        }
-
-        // Topic was recreated (beginning rolled back to 0)
-        if (beginning == 0 && expected > 0) {
-            log.warn("[TOPIC RESET DETECTED] ... at {}", Instant.now(), ...);
-            consumer.seekToBeginning(...);
-            expectedOffsets.put(tp, 0L);
-        }
-    }
-}
-```
-
-#### Change 5 — `initializeConsumer()` (Task 2, startup gap check)
-
-Compares MM2's last committed offset against the topic's current beginning offset at startup. If the beginning has advanced past the next-expected offset, records were purged before replication — immediate exit.
-
-```java
-void initializeConsumer(Set<TopicPartition> taskTopicPartitions) {
-    Map<TopicPartition, Long> topicPartitionOffsets = loadOffsets(taskTopicPartitions);
-    Map<TopicPartition, Long> allBeginningOffsets = consumer.beginningOffsets(...); // all partitions
-
-    for (TopicPartition tp : committedPartitions) {
-        long earliestAvailable = allBeginningOffsets.get(tp);
-        long lastCommitted     = topicPartitionOffsets.get(tp);
-
-        if (earliestAvailable > (lastCommitted + 1)) {
-            log.error("[CRITICAL DATA LOSS AT STARTUP] ...");
-            Exit.exit(1);
-        }
-    }
-    // ... seek each partition to nextOffset
-}
-```
-
-**Design decision — `auto.offset.reset = none`**  
-Set in `start()` to override whatever the operator configured. Without this, the consumer would silently seek to the earliest or latest offset on `OffsetOutOfRangeException`, bypassing our detection logic entirely.
-
-#### Change 6 — Per-record `INFO` log demoted to `DEBUG`
-
-The original code logged every single record at `INFO` level. At 1,000 records/sec this floods logs and makes debugging impossible. Changed to `DEBUG`.
+5. **Updated Unit Tests:**
+   - Added multiple new unit tests in `MirrorSourceTaskTest.java` to verify data-loss detection, compacted topic boundaries, out-of-range exception behaviors, and mid-stream/startup reset scenarios.
+   - Updated the legacy test `testSeekBehaviorDuringStart()` to mock partition beginning/end offsets and prevent false-positive topic reset triggers. (*Justification: Since the task now checks partition boundaries during startup validation, the consumer mock must return valid offset bounds to verify normal seek behavior rather than defaulting to empty maps.*)
+   ```java
+   // From MirrorSourceTaskTest.java: Stub offsets in legacy seek test
+   when(mockConsumer.beginningOffsets(any())).thenReturn(beginningOffsets);
+   when(mockConsumer.endOffsets(any())).thenReturn(endOffsets);
+   ```
 
 ---
 
